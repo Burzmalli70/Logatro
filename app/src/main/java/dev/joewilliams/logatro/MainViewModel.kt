@@ -11,11 +11,12 @@ import kotlinx.coroutines.launch
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.time.Clock
+import kotlin.math.pow
 import kotlin.random.Random
 
 class MainViewModel(private val resources: Resources): ViewModel() {
     private val tileBag: MutableList<Tile> = mutableListOf()
-    private val dictionary: MutableMap<Char,MutableMap<Char,MutableList<String>>> = mutableMapOf()
+    private val dictionary: MutableMap<Char,MutableMap<Char,MutableMap<Char,MutableList<String>>>> = mutableMapOf()
     private val drawnTiles: MutableList<Tile> = mutableListOf()
     private val mutableTileRack: MutableStateFlow<List<Tile>> = MutableStateFlow(emptyList())
     val tileRackState: StateFlow<List<Tile>> = mutableTileRack
@@ -26,6 +27,8 @@ class MainViewModel(private val resources: Resources): ViewModel() {
     val scoreState: StateFlow<Int> = mutableScore
     private val random = Random(Clock.systemDefaultZone().millis())
     var ready = false
+    private val mutableWordlessState: MutableStateFlow<Boolean> = MutableStateFlow(false)
+    val wordlessState: StateFlow<Boolean> = mutableWordlessState
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -49,8 +52,10 @@ class MainViewModel(private val resources: Resources): ViewModel() {
                 print("Now loading ${word[0]}")
             }
             val subdictionary = dictionary[word[0]] ?: mutableMapOf()
-            val sublist = subdictionary[word[1]] ?: mutableListOf()
-            sublist.add(word)
+            val sublist = subdictionary[word[1]] ?: mutableMapOf()
+            val subsublist = sublist[word[2]] ?: mutableListOf()
+            subsublist.add(word)
+            sublist[word[2]] = subsublist
             subdictionary[word[1]] = sublist
             dictionary[word[0]] = subdictionary
         } while (word != null)
@@ -75,6 +80,7 @@ class MainViewModel(private val resources: Resources): ViewModel() {
             tile = drawTile() ?: continue
             mutableTileRack.emit(tileRackState.value.plus(tile))
         } while(tile != null && tileRackState.value.size < rackSize)
+        checkWordless()
     }
 
     private fun drawTile(): Tile? {
@@ -88,15 +94,37 @@ class MainViewModel(private val resources: Resources): ViewModel() {
         viewModelScope.launch {
             var score = 0
             var mult = 1.0
+            val tileBonus = (tiles.count() - 2).toDouble().pow(2.0).toInt()
             for (tile in tiles) {
                 score += tile.value
                 mult *= tile.multiplier
             }
+            score = (score * mult * tileBonus).toInt()
             mutableScore.emit(scoreState.value + score)
             drawnTiles.addAll(tiles)
-            mutableTileRack.emit(tileRackState.value.minus(tiles.toSet()))
             mutableSelectedTiles.emit(emptyList())
             drawTiles()
+        }
+    }
+
+    fun discard(tiles: List<Tile>) {
+        viewModelScope.launch {
+            drawnTiles.addAll(tiles)
+            mutableSelectedTiles.emit(emptyList())
+            drawTiles()
+        }
+    }
+
+    fun reset() {
+        viewModelScope.launch {
+            mutableTileRack.emit(tileRackState.value.plus(selectedTilesState.value))
+            mutableSelectedTiles.emit(emptyList())
+        }
+    }
+
+    fun shuffle() {
+        viewModelScope.launch {
+            mutableTileRack.emit(tileRackState.value.shuffled())
         }
     }
 
@@ -104,15 +132,32 @@ class MainViewModel(private val resources: Resources): ViewModel() {
         viewModelScope.launch {
             if (selectedTilesState.value.contains(tile)) {
                 mutableSelectedTiles.emit(selectedTilesState.value.minus(tile))
+                mutableTileRack.emit(tileRackState.value.plus(tile))
             } else {
                 mutableSelectedTiles.emit(selectedTilesState.value.plus(tile))
+                mutableTileRack.emit(tileRackState.value.minus(tile))
             }
         }
     }
 
     fun checkWord(word: String): Boolean {
         if (word.length < 3) return false
-        return dictionary[word[0]]?.get(word[1])?.contains(word) ?: false
+        return dictionary[word[0]]?.get(word[1])?.get(word[2])?.contains(word) ?: false
+    }
+
+    private fun checkWordless() {
+        for (tile in tileRackState.value) {
+            val subrack = tileRackState.value.minus(tile)
+            for(subtile in subrack) {
+                for (thirdTile in subrack.minus(subtile)) {
+                    if (dictionary[tile.letter]?.get(subtile.letter)?.get(thirdTile.letter)?.isNotEmpty() == true) {
+                        viewModelScope.launch { mutableWordlessState.emit(false) }
+                        return
+                    }
+                }
+            }
+        }
+        viewModelScope.launch { mutableWordlessState.emit(true) }
     }
 }
 
